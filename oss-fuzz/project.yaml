@@ -1,0 +1,4 @@
+homepage: example.com
+language: c++
+santizers:
+ - memory

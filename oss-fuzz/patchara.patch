@@ -1,0 +1,351 @@
+diff --git a/.bazelrc b/.bazelrc
+index d8c1d51..ed4bee4 100644
+--- a/.bazelrc
++++ b/.bazelrc
+@@ -6,7 +6,7 @@ build:linux --cxxopt=-std=c++17
+ build:linux --copt=-Wall
+ build:linux --copt=-Wextra
+ build:linux --copt=-Wpedantic
+-build:linux --copt=-Werror
++#build:linux --copt=-Werror
+ build:linux --cxxopt=-fno-exceptions
+ build:linux --cxxopt=-fno-rtti
+ 
+@@ -82,3 +82,15 @@ build:valgrind --copt=-DCONFIG_VALGRIND
+ 
+ # Try loading per-user configuration.
+ try-import %workspace%/user.bazelrc
++
++# Force the use of Clang for C++ builds
++#build:linux --action_env=CC=clang
++#build:linux --action_env=CXX=clang++
++
++# Fuzzer stuff
++build:asan-libfuzzer --@rules_fuzzing//fuzzing:cc_engine=@rules_fuzzing//fuzzing/engines:libfuzzer
++build:asan-libfuzzer --@rules_fuzzing//fuzzing:cc_engine_instrumentation=libfuzzer
++build:asan-libfuzzer --@rules_fuzzing//fuzzing:cc_engine_sanitizer=asan
++
++build:libfuzzer --@rules_fuzzing//fuzzing:cc_engine=@rules_fuzzing//fuzzing/engines:libfuzzer
++build:libfuzzer --@rules_fuzzing//fuzzing:cc_engine_instrumentation=libfuzzer
+diff --git a/WORKSPACE b/WORKSPACE
+index 3ce35d4..2ce55ea 100644
+--- a/WORKSPACE
++++ b/WORKSPACE
+@@ -33,6 +33,19 @@ http_archive(
+     urls = ["https://github.com/yhirose/cpp-linenoise/archive/bc523e4b03a690cebe3b5f80a6396bcc50215a03.zip"],
+ )
+ 
++http_archive(
++    name = "rules_fuzzing",
++    sha256 = "71fa2724c9802c597199a86111a0499fc4fb22426d322334d3f191dadeff5132",
++    strip_prefix = "rules_fuzzing-0.1.0",
++    urls = ["https://github.com/bazelbuild/rules_fuzzing/archive/v0.1.0.zip"],
++)
++
++
++load("@rules_fuzzing//fuzzing:repositories.bzl", "rules_fuzzing_dependencies")
++rules_fuzzing_dependencies()
++load("@rules_fuzzing//fuzzing:init.bzl", "rules_fuzzing_init")
++rules_fuzzing_init()
++
+ load("//build_defs:repo_rules.bzl", "llvm_project_configure")
+ 
+ llvm_project_configure(name = "llvm_project")
+diff --git a/tools/fuzzer/BUILD b/tools/fuzzer/BUILD
+index d7e3885..63a3589 100644
+--- a/tools/fuzzer/BUILD
++++ b/tools/fuzzer/BUILD
+@@ -1,4 +1,5 @@
+ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
++load("@rules_fuzzing//fuzzing:cc_defs.bzl", "cc_fuzz_test")
+ 
+ cc_library(
+     name = "fuzzer_lib",
+@@ -106,3 +107,19 @@ cc_test(
+         "@com_google_googletest//:gtest_main",
+     ],
+ )
++
++cc_fuzz_test(
++    name = "libfuzzer",
++    data = [
++        "//testdata:fuzzer_binary_gen",
++        "//testdata:fuzzer_binary_srcs",
++    ],
++    tags = ["no-sandbox"],
++    srcs = ["libfuzzer.cc"],
++    deps = [
++        "//lldb-eval",
++        "//lldb-eval:runner",
++        "@bazel_tools//tools/cpp/runfiles",
++        ":fuzzer_lib",
++    ],
++)
+diff --git a/tools/fuzzer/expr_gen.cc b/tools/fuzzer/expr_gen.cc
+index c57cd51..33f7379 100644
+--- a/tools/fuzzer/expr_gen.cc
++++ b/tools/fuzzer/expr_gen.cc
+@@ -1320,7 +1320,7 @@ std::optional<Expr> ExprGenerator::generate() {
+ 
+ bool ExprGenerator::mutate_gen_node(std::shared_ptr<GenNode>& node) {
+   // Don't mutate invalid nodes.
+-  if (node->is_valid()) {
++  if (!node->is_valid()) {
+     return false;
+   }
+ 
+@@ -1576,5 +1576,6 @@ ScalarType DefaultGeneratorRng<Rng>::gen_scalar_type(ScalarMask mask) {
+ 
+ template class DefaultGeneratorRng<Mt19937>;
+ template class DefaultGeneratorRng<FixedRng>;
++template class DefaultGeneratorRng<FuzzRng>;
+ 
+ }  // namespace fuzzer
+diff --git a/tools/fuzzer/libfuzzer.cc b/tools/fuzzer/libfuzzer.cc
+new file mode 100644
+index 0000000..b812134
+--- /dev/null
++++ b/tools/fuzzer/libfuzzer.cc
+@@ -0,0 +1,160 @@
++#include <cassert>
++#include <cstdint>
++#include <memory>
++#include <sstream>
++#include <iostream>
++#include <cstdio>
++
++#include "tools/fuzzer/expr_gen.h"
++#include "tools/fuzzer/gen_node.h"
++#include "tools/fuzzer/rng.h"
++#include "tools/fuzzer/symbol_table.h"
++
++#include "lldb-eval/api.h"
++#include "lldb-eval/runner.h"
++#include "lldb/API/SBDebugger.h"
++#include "lldb/API/SBFrame.h"
++#include "lldb/API/SBProcess.h"
++#include "lldb/API/SBTarget.h"
++#include "lldb/API/SBThread.h"
++#include "tools/cpp/runfiles/runfiles.h"
++#include "tools/fuzzer/ast.h"
++
++using bazel::tools::cpp::runfiles::Runfiles;
++using std::size_t;
++using namespace fuzzer;
++
++static Runfiles* g_runfiles;
++static lldb::SBDebugger g_debugger;
++static lldb::SBProcess g_process;
++static lldb::SBFrame g_frame;
++
++static lldb::SBFrame& get_frame() {
++  static bool initialized = false;
++  if (!initialized) {
++    g_runfiles = Runfiles::CreateForTest();
++    lldb_eval::SetupLLDBServerEnv(*g_runfiles);
++    lldb::SBDebugger::Initialize();
++
++    auto binary_path =
++        g_runfiles->Rlocation("lldb_eval/testdata/fuzzer_binary");
++    auto source_path =
++        g_runfiles->Rlocation("lldb_eval/testdata/fuzzer_binary.cc");
++    g_debugger = lldb::SBDebugger::Create(false);
++    g_process = lldb_eval::LaunchTestProgram(g_debugger, source_path,
++                                             binary_path, "// BREAK HERE");
++    g_frame = g_process.GetSelectedThread().GetSelectedFrame();
++
++    initialized = true;
++  }
++
++  return g_frame;
++}
++
++
++SymbolTable create_symtab() {
++  fuzzer::SymbolTable symtab =
++      fuzzer::SymbolTable::create_from_frame(get_frame(), true);
++
++  return symtab;
++}
++
++
++template <class T>
++ExprGenerator create_generator(T base_rng) {
++  auto rng = std::make_unique<DefaultGeneratorRng<T>>(std::move(base_rng));
++  auto cfg = GenConfig();
++  cfg.bin_op_mask[BinOp::Shl] = false;
++  cfg.bin_op_mask[BinOp::Shr] = false;
++
++  auto symtab = create_symtab();
++  return ExprGenerator(std::move(rng), cfg, symtab);
++}
++
++// Generation tree visitor used to randomly pick nodes.
++class GenNodePicker : public GenTreeVisitor {
++ public:
++  void visit_node(std::shared_ptr<GenNode> node) {
++    if (node->is_valid()) {
++      options_.emplace_back(node);
++    }
++  }
++  template <class Rng>
++  std::shared_ptr<GenNode> pick(Rng& rng) {
++    std::uniform_int_distribution<size_t> distr(0, options_.size() - 1);
++    return options_[distr(rng)];
++  }
++ private:
++  std::vector<std::shared_ptr<GenNode>> options_;
++};
++
++template <class Rng>
++std::shared_ptr<GenNode> pick_random_node(std::shared_ptr<GenNode> root,
++                                          Rng& rng) {
++  GenNodePicker picker;
++  walk_gen_tree(root, &picker);
++  return picker.pick(rng);
++}
++
++class GenNodeWriter : public GenTreeVisitor {
++ public:
++  explicit GenNodeWriter(FuzzWriter& writer) : writer_(writer) {}
++
++  void visit_random_value(rand_t value) {
++    writer_.write(value);
++  }
++
++ private:
++  FuzzWriter& writer_;
++};
++
++void write_node(std::shared_ptr<GenNode> root, FuzzWriter& writer) {
++  GenNodeWriter node_writer(writer);
++  walk_gen_tree(root, &node_writer);
++}
++
++extern "C" size_t LLVMFuzzerCustomMutator(uint8_t* data, size_t size,
++                                          size_t max_size, unsigned int seed) {
++  FuzzReader reader(data, size);
++  auto fixed_generator = create_generator(FuzzRng(std::move(reader)));
++  assert(fixed_generator.generate() && "Expression couldn't be generated!");
++
++  std::mt19937 rng(seed);
++  auto root = fixed_generator.node();
++  auto mutable_node = pick_random_node(root, rng);
++
++  auto random_generator = create_generator(Mt19937(rng()));
++  if (!random_generator.mutate_gen_node(mutable_node)) {
++    return size;
++  }
++
++
++  FuzzWriter writer(data, max_size);
++  write_node(root, writer);
++
++  return writer.size();
++}
++
++extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
++  static int counter = 0;
++  counter++;
++  if (counter == 20) {
++    // assert(false);
++  }
++
++  FuzzReader reader(data, size);
++  auto generator = create_generator(FuzzRng(std::move(reader)));
++  auto maybe_expr = generator.generate();
++
++  if (maybe_expr) {
++    std::ostringstream os;
++    os << *maybe_expr;
++    //printf("expr: `%s`\n", os.str().c_str());
++
++    lldb::SBError error;
++    lldb::SBValue value = lldb_eval::EvaluateExpression(get_frame(), os.str().c_str(), error);
++    (void)value;
++  }
++
++  return 0;
++}
+diff --git a/tools/fuzzer/rng.h b/tools/fuzzer/rng.h
+index a59be7e..675c17a 100644
+--- a/tools/fuzzer/rng.h
++++ b/tools/fuzzer/rng.h
+@@ -77,6 +77,77 @@ class FixedRng : public RngCallbackNotifier {
+   std::queue<rand_t> queue_;
+ };
+ 
++
++class FuzzReader {
++ public:
++  FuzzReader(const uint8_t* data, size_t size)
++      : data_(data), size_(size), cursor_(0) {}
++
++  rand_t read() {
++    rand_t result = next_byte();
++    result <<= 8;
++    result |= next_byte();
++    result <<= 8;
++    result |= next_byte();
++    result <<= 8;
++    result |= next_byte();
++    return result;
++  }
++
++ private:
++  uint8_t next_byte() {
++    return cursor_ < size_ ? data_[cursor_++] : 0;
++  }
++
++ private:
++  const uint8_t* data_;
++  size_t size_;
++  size_t cursor_;
++};
++
++class FuzzWriter {
++ public:
++  FuzzWriter(uint8_t* data, size_t max_size)
++      : data_(data), max_size_(max_size), size_(0) {}
++
++  void write(unsigned int value) {
++    write_byte((value >> 24) & 0xff);
++    write_byte((value >> 16) & 0xff);
++    write_byte((value >> 8) & 0xff);
++    write_byte(value & 0xff);
++  }
++
++  size_t size() const { return size_; }
++
++ private:
++  void write_byte(uint8_t byte) {
++    if (size_ < max_size_) {
++      data_[size_++] = byte;
++    }
++  }
++
++ private:
++  uint8_t* data_;
++  size_t max_size_;
++  size_t size_;
++};
++
++class FuzzRng : public RngCallbackNotifier {
++ public:
++  explicit FuzzRng(FuzzReader reader)
++      : reader_(std::move(reader)) {}
++
++  using result_type = rand_t;
++  static constexpr result_type min() { return std::mt19937::min(); }
++  static constexpr result_type max() { return std::mt19937::max(); }
++
++  result_type operator()() { return consume(reader_.read()); }
++
++ private:
++  FuzzReader reader_;
++};
++
++
+ }  // namespace fuzzer
+ 
+ #endif  // INCLUDE_RNG_H

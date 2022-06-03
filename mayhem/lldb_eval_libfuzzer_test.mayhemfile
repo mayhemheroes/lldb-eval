@@ -1,0 +1,4 @@
+project: PROJECT
+target: lldb_eval_libfuzzer_test
+cmds:
+- cmd: /out/lldb_eval_libfuzzer_test

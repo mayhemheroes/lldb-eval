@@ -24,6 +24,7 @@
 #include "lldb/API/SBType.h"
 #include "lldb/API/SBValue.h"
 #include "lldb/lldb-enumerations.h"
+#include "llvm/ADT/APSInt.h"
 #include "llvm/Support/FormatVariadic.h"
 
 namespace lldb_eval {
@@ -981,7 +982,11 @@ Value Interpreter::EvaluateComparison(BinaryOpKind kind, Value lhs, Value rhs) {
   }
 
   // Must be pointer/integer and/or nullptr comparison.
-  bool ret = Compare(kind, lhs.GetUInt64(), rhs.GetUInt64());
+  size_t ptr_size = target_.GetAddressByteSize() * 8;
+
+  bool ret =
+      Compare(kind, llvm::APSInt(lhs.GetInteger().sextOrTrunc(ptr_size), true),
+              llvm::APSInt(rhs.GetInteger().sextOrTrunc(ptr_size), true));
   return CreateValueFromBool(target_, ret);
 }
 

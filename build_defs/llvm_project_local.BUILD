@@ -169,7 +169,10 @@ cc_library(
             "lib/LLVMRemarks.lib",
             "lib/LLVMBitstreamReader.lib",
             "lib/LLVMBinaryFormat.lib",
-        ],
+        ] + glob([
+            # For LLVM 16+, use glob because this file might not exist.
+            "lib/libLLVMTargetParser.lib",
+        ]),
         ":linux_dynamic": [
             ":libllvm-so",
         ],
@@ -178,7 +181,10 @@ cc_library(
             "lib/libLLVMRemarks.a",
             "lib/libLLVMBitstreamReader.a",
             "lib/libLLVMBinaryFormat.a",
-        ],
+        ] + glob([
+            # For LLVM 16+, use glob because this file might not exist.
+            "lib/libLLVMTargetParser.a",
+        ]),
     }),
     hdrs = [":llvm-headers"],
     includes = ["include"],

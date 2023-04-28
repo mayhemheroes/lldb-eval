@@ -2358,9 +2358,9 @@ ExprResult Parser::ParseIntegerLiteral(clang::NumericLiteralParser& literal,
 
   auto [type, is_unsigned] = PickIntegerType(*ctx_, literal, raw_value);
 
-  return std::make_unique<LiteralNode>(
-      token.getLocation(), ctx_->GetBasicType(type), raw_value,
-      /*is_literal_zero*/ raw_value.isNullValue());
+  return std::make_unique<LiteralNode>(token.getLocation(),
+                                       ctx_->GetBasicType(type), raw_value,
+                                       /*is_literal_zero*/ raw_value.isZero());
 }
 
 // Parse a builtin_func.

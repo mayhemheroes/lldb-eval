@@ -575,7 +575,7 @@ lldb::BasicType TypeDeclaration::GetBasicType() const {
 
   if (sign_specifier_ == SignSpecifier::kUnsigned) {
     switch (type_specifier_) {
-      // clang-format off
+        // clang-format off
       // "unsigned" is "unsigned int"
       case TypeSpecifier::kUnknown:  return lldb::eBasicTypeUnsignedInt;
       case TypeSpecifier::kChar:     return lldb::eBasicTypeUnsignedChar;
@@ -2358,9 +2358,15 @@ ExprResult Parser::ParseIntegerLiteral(clang::NumericLiteralParser& literal,
 
   auto [type, is_unsigned] = PickIntegerType(*ctx_, literal, raw_value);
 
+#if LLVM_VERSION_MAJOR < 14
+  bool is_literal_zero = raw_value.isNullValue();
+#else
+  bool is_literal_zero = raw_value.isZero();
+#endif
+
   return std::make_unique<LiteralNode>(token.getLocation(),
                                        ctx_->GetBasicType(type), raw_value,
-                                       /*is_literal_zero*/ raw_value.isZero());
+                                       is_literal_zero);
 }
 
 // Parse a builtin_func.

@@ -40,6 +40,17 @@ sudo apt install lld-11 clang-11 lldb-11 llvm-11-dev libclang-11-dev liblldb-11-
 
 Or build them from source, see the instructions in the [LLDB documentation](https://lldb.llvm.org/resources/build.html#id9).
 
+```bash
+cmake \
+    -GNinja \
+    -DCMAKE_INSTALL_PREFIX="~/src/llvm-project/build_optdebug/install" \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DLLVM_ENABLE_PROJECTS="lldb;clang;lld" \
+    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+    -DLLVM_TARGETS_TO_BUILD="X86" \
+    ../llvm
+```
+
 #### Windows
 
 On Windows we need to build LLDB (and other parts) from source. The steps are
@@ -57,10 +68,12 @@ mkdir build_x64_optdebug
 cd build_x64_optdebug
 
 cmake ^
-    -DCMAKE_INSTALL_PREFIX='C:\src\llvm-project\build_x64_optdebug\install' ^
-    -DLLVM_ENABLE_PROJECTS='lldb;clang;lld' ^
-    -DLLDB_ENABLE_PYTHON=0 ^
+    -DCMAKE_INSTALL_PREFIX='C:\src\llvm-project\build_optdebug\install' ^
     -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
+    -DLLVM_ENABLE_PROJECTS='lldb;clang;lld' ^
+    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+    -DLLVM_TARGETS_TO_BUILD="X86" \
+    -DLLDB_ENABLE_PYTHON=0 ^
     -GNinja ^
     ../llvm
 
@@ -78,11 +91,14 @@ to your LLVM installation:
 ```bash
 # (Linux) If you installed the packages via "apt install".
 export LLVM_INSTALL_PATH=/usr/lib/llvm-10
+
+# If you built from source using the instruction above.
+export LLVM_INSTALL_PATH=~/src/llvm-project/build_optdebug/install
 ```
 
 ```powershell
-# (Windows) If you built it from source using the instructions above.
-$env:LLVM_INSTALL_PATH = C:\src\llvm-project\build_x64_optdebug\install
+# (Windows) If you built from source using the instructions above.
+$env:LLVM_INSTALL_PATH = C:\src\llvm-project\build_optdebug\install
 ```
 
 Now you can build and test `lldb-eval`:

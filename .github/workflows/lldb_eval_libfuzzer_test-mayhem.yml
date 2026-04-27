@@ -43,13 +43,8 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
     - name: Start analysis
-      uses: forallsecure/mcode-action@v1
+      uses: forallsecure/mcode-action@long-runs
       with:
         mayhem-token: ${{ secrets.MAYHEM_TOKEN }}
         args: --image ${{ steps.meta.outputs.tags }} --cmd /out/lldb_eval_libfuzzer_test
           --target lldb_eval_libfuzzer_test --file mayhem/lldb_eval_libfuzzer_test.mayhemfile
-        sarif-output: sarif
-    - name: Upload SARIF file(s)
-      uses: github/codeql-action/upload-sarif@v2
-      with:
-        sarif_file: sarif

@@ -16,7 +16,9 @@
 
 FROM gcr.io/oss-fuzz-base/base-builder
 
-RUN apt-get update && apt-get install -y wget git patchelf zlib1g-dev python libtinfo-dev --no-install-recommends
+RUN sed -i s/snapshot.ubuntu.com/archive.ubuntu.com/g /etc/apt/sources.list 2>/dev/null || true
+
+RUN apt-get update && apt-get install -y wget git patchelf zlib1g-dev python3 libtinfo-dev --no-install-recommends
 
 COPY . lldb-eval
 RUN rm -rf lldb-eval/mayhem

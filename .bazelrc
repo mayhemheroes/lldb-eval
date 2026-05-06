@@ -1,4 +1,5 @@
 # Make Bazel pickup Linux/Windows configs automatically.
+build --noenable_bzlmod
 build --enable_platform_specific_config
 
 # Linux-specific configuration.
